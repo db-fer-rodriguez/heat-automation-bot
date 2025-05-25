@@ -1,0 +1,27 @@
+{
+  "name": "heat-automation-bot",
+  "version": "1.0.0",
+  "description": "Bot de Telegram para automatizar extracción de datos de HEAT",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "automation",
+    "heat",
+    "puppeteer"
+  ],
+  "author": "Mesa de Ayuda",
+  "license": "MIT",
+  "dependencies": {
+    "telegraf": "^4.15.6",
+    "puppeteer": "^21.9.0",
+    "docx": "^8.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
