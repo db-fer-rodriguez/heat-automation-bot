@@ -14,13 +14,33 @@ console.log('✅ Telegram Token:', TELEGRAM_TOKEN ? 'Configurado' : '❌ Faltant
 console.log('✅ HEAT Username:', HEAT_USERNAME ? 'Configurado' : '❌ Faltante');
 console.log('✅ HEAT Password:', HEAT_PASSWORD ? 'Configurado' : '❌ Faltante');
 
-// Crear instancia del bot
+// Crear instancia del bot con configuración anti-conflicto
 const bot = new TelegramBot(TELEGRAM_TOKEN, { 
-    polling: {
-        interval: 1000,
-        autoStart: false,
-        params: { timeout: 10 }
+    polling: false, // Iniciar manualmente
+    filepath: false // Desactivar descarga automática de archivos
+});
+
+// Manejo específico de errores de polling
+bot.on('polling_error', (error) => {
+    console.error('❌ Error de polling:', error.message);
+    
+    if (error.message.includes('409 Conflict')) {
+        console.log('🔄 Conflicto detectado, reintentando en 10 segundos...');
+        setTimeout(async () => {
+            try {
+                await bot.stopPolling();
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                await iniciarBotSeguro();
+            } catch (retryError) {
+                console.error('❌ Error en reintento:', retryError.message);
+            }
+        }, 10000);
     }
+});
+
+// Manejo de otros errores
+bot.on('error', (error) => {
+    console.error('❌ Error general del bot:', error.message);
 });
 
 // Función mejorada para login con múltiples selectores
@@ -424,26 +444,109 @@ bot.on('message', async (msg) => {
     }
 });
 
-// Función para iniciar el bot de forma segura
+// Función para iniciar el bot de forma segura con reintentos
 async function iniciarBotSeguro() {
+    let intentos = 0;
+    const maxIntentos = 5;
+    
+    while (intentos < maxIntentos) {
+        try {
+            console.log(`🔄 Intento ${intentos + 1}/${maxIntentos} - Iniciando bot...`);
+            
+            // Limpiar webhooks de forma más agresiva
+            try {
+                await bot.deleteWebHook({ drop_pending_updates: true });
+                console.log('✅ Webhooks y updates pendientes limpiados');
+            } catch (webhookError) {
+                console.log('⚠️ Error al limpiar webhook:', webhookError.message);
+            }
+            
+            // Esperar un poco más entre limpiezas
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            
+            // Obtener información del bot para verificar conexión
+            const botInfo = await bot.getMe();
+            console.log(`🤖 Bot verificado: @${botInfo.username} (ID: ${botInfo.id})`);
+            
+            // Parar cualquier polling previo
+            try {
+                await bot.stopPolling();
+                console.log('🛑 Polling previo detenido');
+            } catch (stopError) {
+                console.log('ℹ️ No había polling previo activo');
+            }
+            
+            // Esperar antes de iniciar nuevo polling
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Iniciar polling con configuración específica
+            await bot.startPolling({
+                restart: true,
+                polling: {
+                    interval: 2000,
+                    autoStart: true,
+                    params: {
+                        timeout: 10,
+                        allowed_updates: ['message']
+                    }
+                }
+            });
+            
+            console.log('✅ Polling iniciado correctamente');
+            
+            // Test de conectividad
+            setTimeout(async () => {
+                try {
+                    const updates = await bot.getUpdates({ limit: 1 });
+                    console.log('✅ Test de conectividad exitoso');
+                } catch (testError) {
+                    console.log('⚠️ Test de conectividad falló:', testError.message);
+                }
+            }, 5000);
+            
+            return; // Éxito, salir del bucle
+            
+        } catch (error) {
+            intentos++;
+            console.error(`❌ Error en intento ${intentos}:`, error.message);
+            
+            if (intentos < maxIntentos) {
+                const tiempoEspera = intentos * 3000; // Espera incremental
+                console.log(`⏳ Esperando ${tiempoEspera/1000}s antes del siguiente intento...`);
+                await new Promise(resolve => setTimeout(resolve, tiempoEspera));
+            } else {
+                console.error('❌ Todos los intentos fallaron, usando modo webhook como fallback');
+                await configurarWebhook();
+            }
+        }
+    }
+}
+
+// Función de fallback con webhook
+async function configurarWebhook() {
     try {
-        console.log('🔄 Limpiando instancias previas...');
+        console.log('🔄 Configurando webhook como alternativa...');
         
-        // Limpiar webhooks
-        await bot.deleteWebHook();
-        console.log('✅ Webhooks limpiados');
+        // Obtener la URL base del proyecto Railway
+        const webhookUrl = process.env.RAILWAY_PUBLIC_DOMAIN 
+            ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
+            : `https://${process.env.RAILWAY_PROJECT_NAME}.railway.app/webhook`;
+            
+        console.log(`🌐 Configurando webhook en: ${webhookUrl}`);
         
-        // Obtener información del bot
-        const botInfo = await bot.getMe();
-        console.log(`🤖 Bot iniciado: @${botInfo.username}`);
+        await bot.setWebHook(webhookUrl);
+        console.log('✅ Webhook configurado como alternativa');
         
-        // Iniciar polling
-        await bot.startPolling();
-        console.log('✅ Polling iniciado correctamente');
+        // Agregar endpoint para webhook
+        app.use(express.json());
+        app.post('/webhook', (req, res) => {
+            bot.processUpdate(req.body);
+            res.sendStatus(200);
+        });
         
-    } catch (error) {
-        console.error('❌ Error al iniciar bot:', error);
-        process.exit(1);
+    } catch (webhookError) {
+        console.error('❌ Error configurando webhook:', webhookError.message);
+        console.log('🚨 Bot no pudo iniciarse correctamente');
     }
 }
 
