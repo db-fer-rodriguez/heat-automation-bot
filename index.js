@@ -3,8 +3,6 @@ const express = require('express');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const PizZip = require('pizzip');
-const Docxtemplater = require('docxtemplater');
 
 // Configuración
 const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
@@ -27,70 +25,7 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 const app = express();
 app.use(express.json());
 
-// Plantilla Word básica en base64 (documento Word mínimo válido)
-const WORD_TEMPLATE_BASE64 = 'UEsDBBQABgAIAAAAIQC2gziS/gAAAOEBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbJSRQU7DMBBF70jcwfKWJU67QAgl7QIkHhc0NxAaj8xINyOPp+3t5ThI3SiiLPx/3+/9ebh1Xy7rffwpFdNRKJqK0CIlxDOl8RnLuTyQoKRoM0WJNANxKZqS5iUqWgR3Oz4QLBSMHKUIqMV/uRBkVw6n2EXkJ+2YCKUJtLT0bZHGNbq0WRIDKLkJKQ2DIzwdM8jtGPcxJnNJPTnNPAL4D3Sq0/KK8n3qCKoRWz7+0HlPKqL5/CQHC9N3LgNBz6sEfGd5r2L+czWbB8DnJYZ5tVJK4Uv5uXaAY5FPNOTRSWmnWKVZF1rvUhBHf83cw1zUvKa8vVPzBv91xTr+b+FHAAAA//8DAFBLAwQUAAYACAAAACEAuW5P0joBAACEB000VdgIHJ7kgfwKgzSJpJ6MBPDE3tFd//9ZHzOdLMKwPJZO4C2WDKlNEoIWOZYjoCJ8yb2GrRf1sYRbsY6lVP8L7e6Jp5bW3YZeJv4g5h9JpEJkgLdP0/2e5h7GvJzPi6aOy3OzKKOLOITckjmzAXfTwQk3TKHzO4Wz8k8/7z8+fzKNNY/O47b9r3z8/vn5+fN7+8dnvLbwsw7nA9uGb1rHLsff7c7b78/P35/fP7+/v37+/v79+f37+/f39+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f37+/v79/f3//AAAA//8DAFBLAwQUAAYACAAAACEAOBqJZiUIYgAyB8OOpPXSUFNZgxKuAjE2UBpR5qwNqGsqCUJhiMgJDFhb1/v8/x1VXUjNdHI7dJKEKRfTuK0aD0FoOxJKKEJXKFIJhOOgxgCTHOMYLVd8kcAd8vP7C0/vJ1s8rOjKNNx8rI+2k9kv85j7sE4z8vOQfzTxI4iJnmMlJ2CxQjSGCe5BCJl6vKLBB0qpRg+nCDjT3WJomNJEa1Uu8EkFlhwjFx8uJQ8uPl4g+y6x2/lJGLAJGRGNeFgRbwCFlP8WzH';
 
-// Función para crear plantilla Word válida
-function crearPlantillaWord() {
-    try {
-        // Crear un documento Word básico válido
-        const content = `
-        REPORTE DE DIAGNÓSTICO TÉCNICO
-        =====================================
-        
-        INFORMACIÓN DEL CASO:
-        - Número de Caso: {numeroCaso}
-        - Cliente: {cliente}
-        - Ubicación: {ubicacion}
-        - Fecha: {fecha}
-        
-        INFORMACIÓN DEL EQUIPO:
-        - Equipo: {equipo}
-        - Modelo: {modelo}
-        - Serie: {serie}
-        
-        DIAGNÓSTICO:
-        {diagnostico}
-        
-        SOLUCIÓN APLICADA:
-        {solucion}
-        
-        TÉCNICO RESPONSABLE:
-        Fernando Rodríguez Salamanca
-        Fecha de Reporte: {fechaReporte}
-        `;
-        
-        // Crear un documento simple
-        const zip = new PizZip();
-        
-        // Agregar contenido del documento
-        const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-    <w:body>
-        <w:p><w:r><w:t>${content}</w:t></w:r></w:p>
-    </w:body>
-</w:document>`;
-
-        zip.file("word/document.xml", documentXml);
-        zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-    <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-    <Default Extension="xml" ContentType="application/xml"/>
-    <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-</Types>`);
-
-        zip.file("_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-    <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
-</Relationships>`);
-
-        return zip.generate({ type: 'nodebuffer' });
-        
-    } catch (error) {
-        console.error('❌ Error creando plantilla Word:', error);
-        return null;
-    }
-}
 
 // Función mejorada para extraer información de HEAT
 async function extraerInformacionHEAT(numeroCaso) {
@@ -217,53 +152,71 @@ async function extraerInformacionHEAT(numeroCaso) {
     }
 }
 
-// Función mejorada para generar documento Word
+// Función para generar documento de texto
 async function generarDocumentoWord(datos) {
     try {
-        console.log('📄 Generando documento Word...');
+        console.log('📄 Generando reporte...');
         
         // Crear contenido del documento
         const contenido = `
-REPORTE DE DIAGNÓSTICO TÉCNICO
-=====================================
+═══════════════════════════════════════════════════════════════
+                    REPORTE DE DIAGNÓSTICO TÉCNICO
+═══════════════════════════════════════════════════════════════
 
 INFORMACIÓN DEL CASO:
+─────────────────────────────────────────────────────────────
 • Número de Caso: ${datos.numeroCaso}
 • Cliente: ${datos.cliente}
 • Ubicación: ${datos.ubicacion}
-• Fecha: ${datos.fecha}
+• Fecha del Caso: ${datos.fecha}
 
 INFORMACIÓN DEL EQUIPO:
+─────────────────────────────────────────────────────────────
 • Equipo: ${datos.equipo}
 • Modelo: ${datos.modelo}
-• Serie: ${datos.serie}
+• Número de Serie: ${datos.serie}
 
-DIAGNÓSTICO:
+DIAGNÓSTICO REALIZADO:
+─────────────────────────────────────────────────────────────
 ${datos.diagnostico}
 
 SOLUCIÓN APLICADA:
+─────────────────────────────────────────────────────────────
 ${datos.solucion}
 
-TÉCNICO RESPONSABLE:
-${datos.tecnico}
-Fecha de Reporte: ${new Date().toLocaleDateString('es-CO')}
+INFORMACIÓN DEL TÉCNICO:
+─────────────────────────────────────────────────────────────
+• Técnico Responsable: ${datos.tecnico}
+• Fecha del Reporte: ${new Date().toLocaleDateString('es-CO')}
+• Hora del Reporte: ${new Date().toLocaleTimeString('es-CO')}
 
----
-Reporte generado automáticamente por Bot HEAT
+═══════════════════════════════════════════════════════════════
+Reporte generado automáticamente por Sistema Bot HEAT
+Actas On Site - Soporte Técnico Especializado
+═══════════════════════════════════════════════════════════════
         `;
         
-        // Crear archivo de texto simple por ahora
-        const nombreArchivo = `reporte_${datos.numeroCaso}_${Date.now()}.txt`;
-        const rutaArchivo = path.join('/tmp', nombreArchivo);
+        // Crear nombre de archivo único
+        const timestamp = new Date().toISOString().replace(/:/g, '-').split('.')[0];
+        const nombreArchivo = `Reporte_${datos.numeroCaso}_${timestamp}.txt`;
         
-        // Escribir contenido
-        fs.writeFileSync(rutaArchivo, contenido, 'utf8');
+        // Determinar ruta del archivo
+        let rutaArchivo;
+        try {
+            // Intentar usar /tmp primero (común en sistemas Unix/Linux)
+            rutaArchivo = path.join('/tmp', nombreArchivo);
+            fs.writeFileSync(rutaArchivo, contenido, 'utf8');
+        } catch (error) {
+            // Si falla, usar directorio actual
+            rutaArchivo = path.join(__dirname, nombreArchivo);
+            fs.writeFileSync(rutaArchivo, contenido, 'utf8');
+        }
         
-        console.log('✅ Documento generado exitosamente');
+        console.log('✅ Reporte generado exitosamente:', nombreArchivo);
         return rutaArchivo;
         
     } catch (error) {
-        console.error('❌ Error generando documento:', error);
+        console.error('❌ Error generando reporte:', error);
         throw error;
     }
 }
