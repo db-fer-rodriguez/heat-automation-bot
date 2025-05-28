@@ -4,201 +4,293 @@ const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
 
-// Configuración
-const BOT_TOKEN = process.env.TELEGRAM_TOKEN;
-const HEAT_USERNAME = process.env.HEAT_USERNAME;
-const HEAT_PASSWORD = process.env.HEAT_PASSWORD;
+// Configuración del bot
+const token = process.env.TELEGRAM_BOT_TOKEN;
+const bot = new TelegramBot(token, { polling: true });
+
+// Configuración del servidor Express
+const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Validar variables de entorno
-if (!BOT_TOKEN) {
-    console.error('❌ Error: TELEGRAM_TOKEN no está configurado');
-    process.exit(1);
-}
+// Variables de entorno para HEAT
+const HEAT_URL = process.env.HEAT_URL || 'https://heat.actas.com.co';
+const HEAT_USERNAME = process.env.HEAT_USERNAME;
+const HEAT_PASSWORD = process.env.HEAT_PASSWORD;
 
-console.log('🚀 Iniciando Bot HEAT - Versión Corregida...');
+console.log('🤖 Bot iniciado:', bot.options.username || '@Actasonsite_bot');
 
-// Crear bot de Telegram
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+// Configuración de Puppeteer optimizada para Railway
+const getPuppeteerConfig = () => {
+    const isProduction = process.env.NODE_ENV === 'production';
+    
+    const config = {
+        headless: 'new', // Usar el nuevo modo headless
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process', // Importante para Railway
+            '--disable-gpu',
+            '--disable-extensions',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
+            '--disable-features=TranslateUI',
+            '--disable-ipc-flooding-protection',
+            '--disable-background-networking',
+            '--disable-default-apps',
+            '--disable-sync',
+            '--disable-translate',
+            '--hide-scrollbars',
+            '--metrics-recording-only',
+            '--mute-audio',
+            '--no-default-browser-check',
+            '--no-first-run',
+            '--safebrowsing-disable-auto-update',
+            '--disable-prompt-on-repost',
+            '--disable-hang-monitor',
+            '--disable-client-side-phishing-detection',
+            '--disable-component-update',
+            '--disable-domain-reliability'
+        ],
+        timeout: 60000, // Timeout más largo
+        ignoreDefaultArgs: ['--disable-extensions'],
+        ignoreHTTPSErrors: true
+    };
 
-// Crear servidor Express
-const app = express();
-app.use(express.json());
+    // En producción (Railway), usar configuración específica
+    if (isProduction) {
+        config.executablePath = '/usr/bin/google-chrome-stable';
+        config.args.push('--disable-web-security');
+        config.args.push('--allow-running-insecure-content');
+    }
 
-
+    return config;
+};
 
 // Función mejorada para extraer información de HEAT
 async function extraerInformacionHEAT(numeroCaso) {
     let browser = null;
+    let page = null;
     
     try {
         console.log('🔐 Iniciando navegador para HEAT...');
         
-        browser = await puppeteer.launch({
-            headless: "new", // Usar nueva versión headless
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process',
-                '--disable-gpu'
-            ]
-        });
+        // Configuración específica para Railway
+        const puppeteerConfig = getPuppeteerConfig();
+        
+        // Inicializar browser con reintentos
+        let browserAttempts = 0;
+        const maxBrowserAttempts = 3;
+        
+        while (browserAttempts < maxBrowserAttempts) {
+            try {
+                browser = await puppeteer.launch(puppeteerConfig);
+                break;
+            } catch (error) {
+                browserAttempts++;
+                console.log(`❌ Intento ${browserAttempts} fallido para iniciar browser:`, error.message);
+                
+                if (browserAttempts >= maxBrowserAttempts) {
+                    throw new Error(`No se pudo inicializar el navegador después de ${maxBrowserAttempts} intentos`);
+                }
+                
+                // Esperar antes del siguiente intento
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        }
 
-        const page = await browser.newPage();
+        console.log('✅ Navegador iniciado correctamente');
+        
+        // Crear página con configuración optimizada
+        page = await browser.newPage();
+        
+        // Configurar la página
+        await page.setViewport({ width: 1366, height: 768 });
+        await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         
         // Configurar timeouts más largos
-        page.setDefaultTimeout(30000);
-        page.setDefaultNavigationTimeout(30000);
-        
+        await page.setDefaultNavigationTimeout(60000);
+        await page.setDefaultTimeout(30000);
+
         console.log('🌐 Navegando a HEAT...');
         
         // URLs posibles de HEAT
-        const heatUrls = [
-            'https://heat.actas.com.co',
-            'https://heat.actas.com.co/login',
-            'https://heat.actas.com.co/Login.aspx',
-            'http://heat.actas.com.co'
+        const possibleUrls = [
+            `${HEAT_URL}/login.aspx`,
+            `${HEAT_URL}/Login.aspx`,
+            `${HEAT_URL}/default.aspx`,
+            `${HEAT_URL}/Default.aspx`,
+            `${HEAT_URL}/main.aspx`,
+            `${HEAT_URL}/Main.aspx`,
+            HEAT_URL
         ];
-        
-        let loginSuccessful = false;
-        
-        for (const url of heatUrls) {
+
+        let loginSuccess = false;
+        let currentUrl = '';
+
+        // Intentar cada URL hasta encontrar una que funcione
+        for (const url of possibleUrls) {
             try {
-                console.log(`🔗 Probando URL: ${url}`);
-                await page.goto(url, { waitUntil: 'networkidle2', timeout: 20000 });
+                console.log(`🔗 Intentando URL: ${url}`);
                 
-                // Buscar diferentes selectores de login
-                const loginSelectors = [
-                    '#ctl00_ContentPlaceHolder1_txtUsuario',
-                    'input[name*="usuario"]',
-                    'input[type="text"]',
-                    '#txtUsuario',
-                    '.login-input'
-                ];
+                const response = await page.goto(url, { 
+                    waitUntil: 'networkidle0',
+                    timeout: 30000 
+                });
                 
-                for (const selector of loginSelectors) {
-                    try {
-                        await page.waitForSelector(selector, { timeout: 5000 });
-                        console.log(`✅ Encontrado selector de login: ${selector}`);
-                        loginSuccessful = true;
-                        break;
-                    } catch (e) {
-                        continue;
-                    }
+                if (response && response.ok()) {
+                    currentUrl = url;
+                    console.log(`✅ Conexión exitosa a: ${url}`);
+                    break;
                 }
-                
-                if (loginSuccessful) break;
-                
             } catch (error) {
-                console.log(`❌ Error con URL ${url}:`, error.message);
+                console.log(`❌ Falló URL ${url}:`, error.message);
                 continue;
             }
         }
-        
-        if (!loginSuccessful) {
-            throw new Error('No se pudo acceder al sistema HEAT');
+
+        if (!currentUrl) {
+            throw new Error('No se pudo conectar a ninguna URL de HEAT');
         }
-        
-        // Realizar login si tenemos credenciales
-        if (HEAT_USERNAME && HEAT_PASSWORD) {
-            console.log('🔐 Realizando login...');
-            
-            // Buscar campos de usuario y contraseña
-            const userField = await page.$('input[name*="usuario"], input[type="text"], #txtUsuario');
-            const passField = await page.$('input[name*="password"], input[type="password"], #txtPassword');
-            
-            if (userField && passField) {
-                await userField.type(HEAT_USERNAME);
-                await passField.type(HEAT_PASSWORD);
-                
-                // Buscar botón de login
-                const loginButton = await page.$('input[type="submit"], button[type="submit"], .login-btn');
-                if (loginButton) {
-                    await loginButton.click();
-                    await page.waitForNavigation({ waitUntil: 'networkidle2' });
-                }
+
+        // Buscar campos de login con múltiples selectores posibles
+        const loginSelectors = [
+            '#ctl00_ContentPlaceHolder1_txtUsuario',
+            '#txtUsuario',
+            'input[name*="Usuario"]',
+            'input[name*="username"]',
+            'input[type="text"]'
+        ];
+
+        const passwordSelectors = [
+            '#ctl00_ContentPlaceHolder1_txtPassword',
+            '#txtPassword',
+            'input[name*="Password"]',
+            'input[name*="password"]',
+            'input[type="password"]'
+        ];
+
+        let usernameField = null;
+        let passwordField = null;
+
+        // Buscar campo de usuario
+        for (const selector of loginSelectors) {
+            try {
+                await page.waitForSelector(selector, { timeout: 5000 });
+                usernameField = selector;
+                console.log(`✅ Campo usuario encontrado: ${selector}`);
+                break;
+            } catch (error) {
+                continue;
             }
         }
+
+        // Buscar campo de contraseña
+        for (const selector of passwordSelectors) {
+            try {
+                await page.waitForSelector(selector, { timeout: 5000 });
+                passwordField = selector;
+                console.log(`✅ Campo contraseña encontrado: ${selector}`);
+                break;
+            } catch (error) {
+                continue;
+            }
+        }
+
+        if (!usernameField || !passwordField) {
+            // Tomar screenshot para debugging
+            await page.screenshot({ path: '/tmp/heat_login_error.png', fullPage: true });
+            throw new Error('No se encontraron los campos de login en HEAT');
+        }
+
+        console.log('🔐 Iniciando sesión en HEAT...');
         
-        // Buscar el caso real en HEAT
+        // Llenar credenciales
+        await page.type(usernameField, HEAT_USERNAME);
+        await page.type(passwordField, HEAT_PASSWORD);
+
+        // Buscar botón de login
+        const loginButtonSelectors = [
+            '#ctl00_ContentPlaceHolder1_btnIngresar',
+            '#btnIngresar',
+            'input[value*="Ingresar"]',
+            'input[value*="Login"]',
+            'button[type="submit"]',
+            'input[type="submit"]'
+        ];
+
+        let loginButton = null;
+        for (const selector of loginButtonSelectors) {
+            try {
+                await page.waitForSelector(selector, { timeout: 5000 });
+                loginButton = selector;
+                console.log(`✅ Botón login encontrado: ${selector}`);
+                break;
+            } catch (error) {
+                continue;
+            }
+        }
+
+        if (!loginButton) {
+            throw new Error('No se encontró el botón de login');
+        }
+
+        // Hacer clic en login
+        await page.click(loginButton);
+        
+        // Esperar a que cargue la página principal
+        try {
+            await page.waitForNavigation({ 
+                waitUntil: 'networkidle0', 
+                timeout: 30000 
+            });
+            console.log('✅ Login exitoso');
+        } catch (error) {
+            console.log('⚠️ Navegación lenta, continuando...');
+        }
+
+        // Buscar el caso específico
         console.log(`🔍 Buscando caso: ${numeroCaso}`);
         
-        // Navegar a la página de búsqueda de casos
-        const searchUrl = page.url().includes('/Main.aspx') ? page.url() : 
-                         page.url().replace(/\/[^\/]*$/, '/Main.aspx');
-        
-        if (!page.url().includes('Main.aspx')) {
-            await page.goto(searchUrl, { waitUntil: 'networkidle2' });
-        }
-        
-        // Buscar campo de búsqueda de casos
+        // Buscar campo de búsqueda
         const searchSelectors = [
             'input[name*="search"]',
-            'input[placeholder*="caso"]',
-            'input[placeholder*="ticket"]',
-            '#txtSearch',
-            '.search-input'
+            'input[name*="caso"]',
+            'input[name*="ticket"]',
+            'input[placeholder*="buscar"]',
+            'input[type="text"]'
         ];
-        
+
         let searchField = null;
         for (const selector of searchSelectors) {
             try {
-                searchField = await page.$(selector);
-                if (searchField) {
-                    console.log(`✅ Campo de búsqueda encontrado: ${selector}`);
+                const elements = await page.$$(selector);
+                if (elements.length > 0) {
+                    searchField = selector;
+                    console.log(`✅ Campo búsqueda encontrado: ${selector}`);
                     break;
                 }
-            } catch (e) {
+            } catch (error) {
                 continue;
             }
         }
-        
-        if (!searchField) {
-            throw new Error('No se encontró el campo de búsqueda en HEAT');
+
+        if (searchField) {
+            await page.type(searchField, numeroCaso);
+            await page.keyboard.press('Enter');
+            
+            // Esperar resultados
+            await page.waitForTimeout(3000);
         }
+
+        // Extraer información del caso
+        console.log('📊 Extrayendo información del caso...');
         
-        // Limpiar campo y escribir número de caso
-        await searchField.click({ clickCount: 3 }); // Seleccionar todo
-        await searchField.type(numeroCaso);
-        
-        // Buscar botón de búsqueda
-        const searchButton = await page.$('input[type="submit"][value*="Buscar"], button[type="submit"], .search-btn');
-        if (searchButton) {
-            await searchButton.click();
-        } else {
-            await searchField.press('Enter');
-        }
-        
-        // Esperar resultados
-        await page.waitForTimeout(3000);
-        
-        // Buscar el caso en los resultados
-        const caseLinks = await page.$('a[href*="ViewCase"], a[href*="Case"], tr td a');
-        let caseFound = false;
-        
-        for (const link of caseLinks) {
-            const linkText = await page.evaluate(el => el.textContent, link);
-            if (linkText && linkText.includes(numeroCaso)) {
-                console.log(`✅ Caso encontrado, abriendo: ${numeroCaso}`);
-                await link.click();
-                await page.waitForNavigation({ waitUntil: 'networkidle2' });
-                caseFound = true;
-                break;
-            }
-        }
-        
-        if (!caseFound) {
-            throw new Error(`Caso ${numeroCaso} no encontrado en el sistema HEAT`);
-        }
-        
-        // Extraer información real del caso
-        console.log('📊 Extrayendo datos del caso...');
-        
-        const datos = await page.evaluate((caseNum) => {
+        const datos = await page.evaluate(() => {
             const extractText = (selectors) => {
                 for (const selector of selectors) {
                     const element = document.querySelector(selector);
@@ -208,178 +300,104 @@ async function extraerInformacionHEAT(numeroCaso) {
                 }
                 return '';
             };
-            
+
             return {
-                numeroCaso: caseNum,
-                cliente: extractText([
-                    'input[name*="cliente"]', 
-                    'input[name*="customer"]',
-                    'span[id*="cliente"]',
-                    'td:contains("Cliente") + td',
-                    '[data-field="cliente"]'
-                ]) || 'No especificado',
-                
-                ubicacion: extractText([
-                    'input[name*="ubicacion"]',
-                    'input[name*="location"]', 
-                    'input[name*="site"]',
-                    'span[id*="ubicacion"]',
-                    '[data-field="ubicacion"]'
-                ]) || 'No especificado',
-                
-                equipo: extractText([
-                    'input[name*="equipo"]',
-                    'input[name*="equipment"]',
-                    'textarea[name*="equipo"]',
-                    'span[id*="equipo"]',
-                    '[data-field="equipo"]'
-                ]) || 'No especificado',
-                
-                modelo: extractText([
-                    'input[name*="modelo"]',
-                    'input[name*="model"]',
-                    'span[id*="modelo"]',
-                    '[data-field="modelo"]'
-                ]) || 'No especificado',
-                
-                serie: extractText([
-                    'input[name*="serie"]',
-                    'input[name*="serial"]',
-                    'span[id*="serie"]',
-                    '[data-field="serie"]'
-                ]) || 'No especificado',
-                
-                diagnostico: extractText([
-                    'textarea[name*="diagnostico"]',
-                    'textarea[name*="diagnosis"]',
-                    'textarea[name*="descripcion"]',
-                    'textarea[name*="description"]',
-                    'div[id*="diagnostico"]'
-                ]) || 'No especificado',
-                
-                solucion: extractText([
-                    'textarea[name*="solucion"]',
-                    'textarea[name*="solution"]',
-                    'textarea[name*="resolucion"]',
-                    'textarea[name*="resolution"]',
-                    'div[id*="solucion"]'
-                ]) || 'No especificado',
-                
-                fecha: extractText([
-                    'input[name*="fecha"]',
-                    'input[name*="date"]',
-                    'span[id*="fecha"]'
-                ]) || new Date().toLocaleDateString('es-CO'),
-                
-                estado: extractText([
-                    'select[name*="estado"] option:checked',
-                    'input[name*="status"]',
-                    'span[id*="estado"]'
-                ]) || 'No especificado',
-                
-                prioridad: extractText([
-                    'select[name*="prioridad"] option:checked',
-                    'select[name*="priority"] option:checked',
-                    'span[id*="prioridad"]'
-                ]) || 'No especificado'
+                numero: extractText(['input[name*="numero"]', '[id*="numero"]', '[class*="case-number"]']),
+                cliente: extractText(['input[name*="cliente"]', '[id*="cliente"]', '[class*="client"]']),
+                ubicacion: extractText(['input[name*="ubicacion"]', '[id*="site"]', '[class*="location"]']),
+                equipo: extractText(['input[name*="equipo"]', '[id*="equipment"]', '[class*="device"]']),
+                modelo: extractText(['input[name*="modelo"]', '[id*="model"]', '[class*="model"]']),
+                serie: extractText(['input[name*="serie"]', '[id*="serial"]', '[class*="serial"]']),
+                diagnostico: extractText(['textarea[name*="diagnostico"]', '[id*="diagnosis"]', '[class*="problem"]']),
+                solucion: extractText(['textarea[name*="solucion"]', '[id*="solution"]', '[class*="resolution"]']),
+                estado: extractText(['select[name*="estado"]', '[id*="status"]', '[class*="status"]']),
+                prioridad: extractText(['select[name*="prioridad"]', '[id*="priority"]', '[class*="priority"]']),
+                fecha: extractText(['input[name*="fecha"]', '[id*="date"]', '[class*="date"]'])
             };
-        }, numeroCaso);
-        
-        // Validar que se extrajo información útil
-        const camposVacios = Object.entries(datos)
-            .filter(([key, value]) => key !== 'numeroCaso' && (value === 'No especificado' || value === ''))
-            .length;
-            
-        if (camposVacios === Object.keys(datos).length - 1) {
-            throw new Error('No se pudo extraer información válida del caso. Verificar selectores de HEAT.');
-        }
-        
-        // Agregar información del técnico
-        datos.tecnico = 'Fernando Rodríguez Salamanca';
-        
-        console.log('✅ Información extraída exitosamente:', {
-            caso: datos.numeroCaso,
-            cliente: datos.cliente.substring(0, 20) + '...',
-            camposExtraidos: Object.keys(datos).length
         });
+
+        // Validar que se extrajo información real
+        const camposLlenos = Object.values(datos).filter(valor => valor && valor.length > 0).length;
         
+        if (camposLlenos < 3) {
+            throw new Error(`Solo se pudieron extraer ${camposLlenos} campos. Caso no encontrado o acceso denegado.`);
+        }
+
+        // Asegurar que el número de caso sea el correcto
+        datos.numero = numeroCaso;
+        datos.fechaExtraccion = new Date().toLocaleString('es-CO');
+
+        console.log(`✅ Información extraída: ${camposLlenos} campos válidos`);
         return datos;
-        
+
     } catch (error) {
-        console.error('❌ Error en extracción HEAT:', error.message);
+        console.log('❌ Error en extracción HEAT:', error.message);
         throw error;
     } finally {
-        if (browser) {
-            await browser.close();
+        // Limpiar recursos
+        try {
+            if (page) await page.close();
+            if (browser) await browser.close();
+        } catch (error) {
+            console.log('⚠️ Error cerrando navegador:', error.message);
         }
     }
 }
 
-// Función para generar documento de texto
-async function generarDocumentoWord(datos) {
+// Función para generar reporte
+async function generarReporte(datos) {
     try {
         console.log('📄 Generando reporte...');
         
-        // Crear contenido del documento
         const contenido = `
 ═══════════════════════════════════════════════════════════════
-                    REPORTE DE DIAGNÓSTICO TÉCNICO
+                    🔧 REPORTE TÉCNICO ACTAS
 ═══════════════════════════════════════════════════════════════
 
-INFORMACIÓN DEL CASO:
-─────────────────────────────────────────────────────────────
-• Número de Caso: ${datos.numeroCaso}
-• Cliente: ${datos.cliente}
-• Ubicación: ${datos.ubicacion}
-• Fecha del Caso: ${datos.fecha}
+📋 INFORMACIÓN DEL CASO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Número de Caso: ${datos.numero || 'N/A'}
+Cliente: ${datos.cliente || 'No especificado'}
+Ubicación: ${datos.ubicacion || 'No especificada'}
+Estado: ${datos.estado || 'N/A'}
+Prioridad: ${datos.prioridad || 'N/A'}
+Fecha: ${datos.fecha || 'N/A'}
 
-INFORMACIÓN DEL EQUIPO:
-─────────────────────────────────────────────────────────────
-• Equipo: ${datos.equipo}
-• Modelo: ${datos.modelo}
-• Número de Serie: ${datos.serie}
+🖥️ INFORMACIÓN DEL EQUIPO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Equipo: ${datos.equipo || 'No especificado'}
+Modelo: ${datos.modelo || 'No especificado'}
+No. Serie: ${datos.serie || 'No especificado'}
 
-DIAGNÓSTICO REALIZADO:
-─────────────────────────────────────────────────────────────
-${datos.diagnostico}
+🔍 DIAGNÓSTICO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${datos.diagnostico || 'No especificado'}
 
-SOLUCIÓN APLICADA:
-─────────────────────────────────────────────────────────────
-${datos.solucion}
+✅ SOLUCIÓN APLICADA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${datos.solucion || 'No especificada'}
 
-INFORMACIÓN DEL TÉCNICO:
-─────────────────────────────────────────────────────────────
-• Técnico Responsable: ${datos.tecnico}
-• Fecha del Reporte: ${new Date().toLocaleDateString('es-CO')}
-• Hora del Reporte: ${new Date().toLocaleTimeString('es-CO')}
+📊 INFORMACIÓN TÉCNICA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Técnico: Sistema Automatizado ACTAS
+Fecha Extracción: ${datos.fechaExtraccion}
+Sistema: HEAT Service Management
 
 ═══════════════════════════════════════════════════════════════
-Reporte generado automáticamente por Sistema Bot HEAT
-Actas On Site - Soporte Técnico Especializado
+                    ✅ REPORTE GENERADO EXITOSAMENTE
 ═══════════════════════════════════════════════════════════════
-        `;
+`;
+
+        const fileName = `reporte_${datos.numero}_${Date.now()}.txt`;
+        const filePath = `/tmp/${fileName}`;
         
-        // Crear nombre de archivo único
-        const timestamp = new Date().toISOString().replace(/:/g, '-').split('.')[0];
-        const nombreArchivo = `Reporte_${datos.numeroCaso}_${timestamp}.txt`;
+        fs.writeFileSync(filePath, contenido);
+        console.log(`✅ Reporte generado: ${fileName}`);
         
-        // Determinar ruta del archivo
-        let rutaArchivo;
-        try {
-            // Intentar usar /tmp primero (común en sistemas Unix/Linux)
-            rutaArchivo = path.join('/tmp', nombreArchivo);
-            fs.writeFileSync(rutaArchivo, contenido, 'utf8');
-        } catch (error) {
-            // Si falla, usar directorio actual
-            rutaArchivo = path.join(__dirname, nombreArchivo);
-            fs.writeFileSync(rutaArchivo, contenido, 'utf8');
-        }
-        
-        console.log('✅ Reporte generado exitosamente:', nombreArchivo);
-        return rutaArchivo;
+        return { filePath, fileName, contenido };
         
     } catch (error) {
-        console.error('❌ Error generando reporte:', error);
+        console.log('❌ Error generando reporte:', error.message);
         throw error;
     }
 }
@@ -387,109 +405,130 @@ Actas On Site - Soporte Técnico Especializado
 // Función principal para procesar caso
 async function procesarCaso(numeroCaso, chatId) {
     try {
-        console.log(`🔍 Procesando caso: ${numeroCaso}`);
+        console.log(`🚀 Procesando caso: ${numeroCaso}`);
         
-        // Enviar mensaje de procesamiento
-        await bot.sendMessage(chatId, '🔍 Extrayendo información del sistema HEAT...');
-        
-        // Extraer información
+        // Extraer información real de HEAT
         const datos = await extraerInformacionHEAT(numeroCaso);
         
         // Validar que se extrajo información real
-        if (!datos || datos.cliente === 'No especificado') {
-            throw new Error(`No se pudo extraer información válida para el caso ${numeroCaso}. Verificar que el caso existe en HEAT.`);
+        if (!datos || Object.keys(datos).length === 0) {
+            throw new Error('No se pudo extraer información del caso');
         }
+
+        // Generar reporte
+        const reporte = await generarReporte(datos);
         
-        // Generar documento
-        await bot.sendMessage(chatId, '📄 Generando reporte...');
-        const rutaArchivo = await generarDocumentoWord(datos);
-        
-        // Enviar archivo
-        await bot.sendDocument(chatId, rutaArchivo, {
-            caption: `📋 Reporte generado para caso: ${numeroCaso}\n🕒 ${new Date().toLocaleString('es-CO')}`
+        // Enviar reporte
+        await bot.sendDocument(chatId, reporte.filePath, {
+            caption: `📄 Reporte generado para caso: ${numeroCaso}\n✅ Información extraída de HEAT`
         });
-        
-        // Limpiar archivo temporal
-        try {
-            fs.unlinkSync(rutaArchivo);
-        } catch (e) {
-            console.log('⚠️ No se pudo eliminar archivo temporal:', e.message);
-        }
-        
-        console.log('✅ Caso procesado exitosamente');
+
+        console.log(`✅ Caso ${numeroCaso} procesado exitosamente`);
+        return true;
         
     } catch (error) {
-        console.error('❌ Error procesando caso:', error);
-        await bot.sendMessage(chatId, `❌ Error procesando caso ${numeroCaso}: ${error.message}`);
+        console.log('❌ Error procesando caso:', error.message);
+        await bot.sendMessage(chatId, 
+            `❌ Error procesando caso ${numeroCaso}:\n${error.message}\n\n` +
+            `🔧 Posibles causas:\n` +
+            `• Caso no existe en HEAT\n` +
+            `• Problemas de conectividad\n` +
+            `• Credenciales incorrectas\n` +
+            `• Sistema HEAT no disponible`
+        );
+        throw error;
     }
 }
 
-// Manejadores de mensajes
+// Manejador de mensajes del bot
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
-    const text = msg.text;
-    
-    if (!text) return;
-    
-    console.log(`📨 Mensaje recibido: ${text}`);
-    
-    // Comando de inicio
-    if (text === '/start') {
+    const texto = msg.text;
+
+    try {
+        if (texto === '/start') {
+            await bot.sendMessage(chatId, 
+                '🤖 Bot HEAT ACTAS iniciado\n\n' +
+                '📋 Envía un número de caso para generar el reporte\n' +
+                'Ejemplo: REQ-123456\n\n' +
+                '✅ Solo se procesan casos reales de HEAT'
+            );
+            return;
+        }
+
+        // Validar formato de caso
+        const formatoCaso = /^[A-Z]{2,4}-\d{6}$/i;
+        if (formatoCaso.test(texto)) {
+            const numeroCaso = texto.toUpperCase();
+            
+            await bot.sendMessage(chatId, `🔍 Procesando caso: ${numeroCaso}\n⏳ Conectando a HEAT...`);
+            
+            await procesarCaso(numeroCaso, chatId);
+        } else {
+            await bot.sendMessage(chatId, 
+                '❌ Formato de caso inválido\n\n' +
+                '📝 Formato correcto: REQ-123456\n' +
+                'Ejemplos válidos:\n' +
+                '• REQ-123456\n' +
+                '• INC-654321\n' +
+                '• CHG-789012'
+            );
+        }
+    } catch (error) {
+        console.log('❌ Error en mensaje:', error.message);
         await bot.sendMessage(chatId, 
-            '🤖 ¡Hola! Soy el Bot HEAT\n\n' +
-            '📋 Envíame un número de caso (ej: REQ-361569) y generaré un reporte automáticamente.\n\n' +
-            '🔧 Funciones disponibles:\n' +
-            '• Extracción de información de HEAT\n' +
-            '• Generación de reportes de diagnóstico\n' +
-            '• Descarga automática de documentos'
+            `❌ Error interno del bot:\n${error.message}`
         );
-        return;
     }
-    
-    // Detectar número de caso
-    const casePattern = /^(REQ|INC|CHG|PRB)-?\d+$/i;
-    if (casePattern.test(text.trim())) {
-        const numeroCaso = text.trim().toUpperCase();
-        await procesarCaso(numeroCaso, chatId);
-        return;
-    }
-    
-    // Mensaje por defecto
-    await bot.sendMessage(chatId, 
-        '❓ No entiendo tu mensaje.\n\n' +
-        '📝 Envía un número de caso válido (ej: REQ-361569)\n' +
-        'o usa /start para ver las opciones disponibles.'
-    );
 });
 
-// Manejo de errores
-bot.on('error', (error) => {
-    console.error('❌ Error del bot:', error);
-});
-
-bot.on('polling_error', (error) => {
-    console.error('❌ Error de polling:', error);
-});
-
-// Servidor web para Railway
+// Configurar servidor Express
 app.get('/', (req, res) => {
     res.json({
-        status: 'Bot HEAT funcionando',
-        version: '3.1.0',
-        timestamp: new Date().toISOString()
+        status: 'Bot HEAT ACTAS funcionando',
+        version: '4.0.0',
+        timestamp: new Date().toISOString(),
+        features: [
+            'Extracción real de HEAT',
+            'Configuración optimizada para Railway',
+            'Manejo robusto de errores',
+            'Generación de reportes'
+        ]
     });
 });
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'healthy' });
+    res.json({ 
+        status: 'healthy',
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        environment: process.env.NODE_ENV || 'development'
+    });
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
-    console.log(`🌐 Servidor iniciado en puerto ${PORT}`);
+    console.log(`✅ Servidor Express iniciado en puerto ${PORT}`);
+    console.log('✅ Polling iniciado correctamente');
+    console.log('🚀 Bot COMPLETO funcionando correctamente');
 });
 
-// Mensaje de inicio
-console.log(`Bot iniciado: @${bot.options.username || 'Actasonsite_bot'}`);
-console.log('✅ Polling iniciado correctamente');
-console.log('🚀 Bot COMPLETO funcionando correctamente - Versión Corregida');
+// Manejo de errores no capturados
+process.on('unhandledRejection', (reason, promise) => {
+    console.log('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.log('❌ Uncaught Exception:', error);
+});
+
+// Manejo de señales de terminación
+process.on('SIGTERM', async () => {
+    console.log('🔄 Recibida señal SIGTERM, cerrando bot...');
+    process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+    console.log('🔄 Recibida señal SIGINT, cerrando bot...');
+    process.exit(0);
+});
