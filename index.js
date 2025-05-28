@@ -124,23 +124,186 @@ async function extraerInformacionHEAT(numeroCaso) {
             }
         }
         
-        // Simular búsqueda del caso
+        // Buscar el caso real en HEAT
         console.log(`🔍 Buscando caso: ${numeroCaso}`);
         
-        // Aquí intentaríamos buscar el caso real
-        // Por ahora, retornamos datos simulados
-        return {
-            numeroCaso: numeroCaso,
-            cliente: 'Cliente Ejemplo S.A.S',
-            ubicacion: 'Bogotá D.C.',
-            equipo: 'Servidor HP ProLiant',
-            modelo: 'DL380 Gen10',
-            serie: 'SN123456789',
-            diagnostico: 'Falla en disco duro principal del servidor',
-            solucion: 'Reemplazo de disco duro defectuoso y restauración desde backup',
-            fecha: new Date().toLocaleDateString('es-CO'),
-            tecnico: 'Fernando Rodríguez Salamanca'
-        };
+        // Navegar a la página de búsqueda de casos
+        const searchUrl = page.url().includes('/Main.aspx') ? page.url() : 
+                         page.url().replace(/\/[^\/]*$/, '/Main.aspx');
+        
+        if (!page.url().includes('Main.aspx')) {
+            await page.goto(searchUrl, { waitUntil: 'networkidle2' });
+        }
+        
+        // Buscar campo de búsqueda de casos
+        const searchSelectors = [
+            'input[name*="search"]',
+            'input[placeholder*="caso"]',
+            'input[placeholder*="ticket"]',
+            '#txtSearch',
+            '.search-input'
+        ];
+        
+        let searchField = null;
+        for (const selector of searchSelectors) {
+            try {
+                searchField = await page.$(selector);
+                if (searchField) {
+                    console.log(`✅ Campo de búsqueda encontrado: ${selector}`);
+                    break;
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+        
+        if (!searchField) {
+            throw new Error('No se encontró el campo de búsqueda en HEAT');
+        }
+        
+        // Limpiar campo y escribir número de caso
+        await searchField.click({ clickCount: 3 }); // Seleccionar todo
+        await searchField.type(numeroCaso);
+        
+        // Buscar botón de búsqueda
+        const searchButton = await page.$('input[type="submit"][value*="Buscar"], button[type="submit"], .search-btn');
+        if (searchButton) {
+            await searchButton.click();
+        } else {
+            await searchField.press('Enter');
+        }
+        
+        // Esperar resultados
+        await page.waitForTimeout(3000);
+        
+        // Buscar el caso en los resultados
+        const caseLinks = await page.$('a[href*="ViewCase"], a[href*="Case"], tr td a');
+        let caseFound = false;
+        
+        for (const link of caseLinks) {
+            const linkText = await page.evaluate(el => el.textContent, link);
+            if (linkText && linkText.includes(numeroCaso)) {
+                console.log(`✅ Caso encontrado, abriendo: ${numeroCaso}`);
+                await link.click();
+                await page.waitForNavigation({ waitUntil: 'networkidle2' });
+                caseFound = true;
+                break;
+            }
+        }
+        
+        if (!caseFound) {
+            throw new Error(`Caso ${numeroCaso} no encontrado en el sistema HEAT`);
+        }
+        
+        // Extraer información real del caso
+        console.log('📊 Extrayendo datos del caso...');
+        
+        const datos = await page.evaluate((caseNum) => {
+            const extractText = (selectors) => {
+                for (const selector of selectors) {
+                    const element = document.querySelector(selector);
+                    if (element) {
+                        return element.textContent?.trim() || element.value?.trim() || '';
+                    }
+                }
+                return '';
+            };
+            
+            return {
+                numeroCaso: caseNum,
+                cliente: extractText([
+                    'input[name*="cliente"]', 
+                    'input[name*="customer"]',
+                    'span[id*="cliente"]',
+                    'td:contains("Cliente") + td',
+                    '[data-field="cliente"]'
+                ]) || 'No especificado',
+                
+                ubicacion: extractText([
+                    'input[name*="ubicacion"]',
+                    'input[name*="location"]', 
+                    'input[name*="site"]',
+                    'span[id*="ubicacion"]',
+                    '[data-field="ubicacion"]'
+                ]) || 'No especificado',
+                
+                equipo: extractText([
+                    'input[name*="equipo"]',
+                    'input[name*="equipment"]',
+                    'textarea[name*="equipo"]',
+                    'span[id*="equipo"]',
+                    '[data-field="equipo"]'
+                ]) || 'No especificado',
+                
+                modelo: extractText([
+                    'input[name*="modelo"]',
+                    'input[name*="model"]',
+                    'span[id*="modelo"]',
+                    '[data-field="modelo"]'
+                ]) || 'No especificado',
+                
+                serie: extractText([
+                    'input[name*="serie"]',
+                    'input[name*="serial"]',
+                    'span[id*="serie"]',
+                    '[data-field="serie"]'
+                ]) || 'No especificado',
+                
+                diagnostico: extractText([
+                    'textarea[name*="diagnostico"]',
+                    'textarea[name*="diagnosis"]',
+                    'textarea[name*="descripcion"]',
+                    'textarea[name*="description"]',
+                    'div[id*="diagnostico"]'
+                ]) || 'No especificado',
+                
+                solucion: extractText([
+                    'textarea[name*="solucion"]',
+                    'textarea[name*="solution"]',
+                    'textarea[name*="resolucion"]',
+                    'textarea[name*="resolution"]',
+                    'div[id*="solucion"]'
+                ]) || 'No especificado',
+                
+                fecha: extractText([
+                    'input[name*="fecha"]',
+                    'input[name*="date"]',
+                    'span[id*="fecha"]'
+                ]) || new Date().toLocaleDateString('es-CO'),
+                
+                estado: extractText([
+                    'select[name*="estado"] option:checked',
+                    'input[name*="status"]',
+                    'span[id*="estado"]'
+                ]) || 'No especificado',
+                
+                prioridad: extractText([
+                    'select[name*="prioridad"] option:checked',
+                    'select[name*="priority"] option:checked',
+                    'span[id*="prioridad"]'
+                ]) || 'No especificado'
+            };
+        }, numeroCaso);
+        
+        // Validar que se extrajo información útil
+        const camposVacios = Object.entries(datos)
+            .filter(([key, value]) => key !== 'numeroCaso' && (value === 'No especificado' || value === ''))
+            .length;
+            
+        if (camposVacios === Object.keys(datos).length - 1) {
+            throw new Error('No se pudo extraer información válida del caso. Verificar selectores de HEAT.');
+        }
+        
+        // Agregar información del técnico
+        datos.tecnico = 'Fernando Rodríguez Salamanca';
+        
+        console.log('✅ Información extraída exitosamente:', {
+            caso: datos.numeroCaso,
+            cliente: datos.cliente.substring(0, 20) + '...',
+            camposExtraidos: Object.keys(datos).length
+        });
+        
+        return datos;
         
     } catch (error) {
         console.error('❌ Error en extracción HEAT:', error.message);
@@ -230,23 +393,11 @@ async function procesarCaso(numeroCaso, chatId) {
         await bot.sendMessage(chatId, '🔍 Extrayendo información del sistema HEAT...');
         
         // Extraer información
-        let datos;
-        try {
-            datos = await extraerInformacionHEAT(numeroCaso);
-        } catch (error) {
-            console.log('⚠️ Error en extracción real, usando datos simulados');
-            datos = {
-                numeroCaso: numeroCaso,
-                cliente: 'Cliente Ejemplo S.A.S',
-                ubicacion: 'Bogotá D.C.',
-                equipo: 'Servidor HP ProLiant',
-                modelo: 'DL380 Gen10',
-                serie: 'SN123456789',
-                diagnostico: 'Diagnóstico simulado - Error de conectividad con sistema HEAT',
-                solucion: 'Solución simulada - Verificar conectividad y credenciales',
-                fecha: new Date().toLocaleDateString('es-CO'),
-                tecnico: 'Fernando Rodríguez Salamanca'
-            };
+        const datos = await extraerInformacionHEAT(numeroCaso);
+        
+        // Validar que se extrajo información real
+        if (!datos || datos.cliente === 'No especificado') {
+            throw new Error(`No se pudo extraer información válida para el caso ${numeroCaso}. Verificar que el caso existe en HEAT.`);
         }
         
         // Generar documento
