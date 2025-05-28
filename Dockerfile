@@ -1,46 +1,45 @@
-# Usar imagen base oficial de Node.js 18 con Alpine (más ligera)
-FROM node:18-alpine
+# Usar imagen base de Node.js 18
+FROM node:18-slim
 
-# Instalar dependencias del sistema para Puppeteer
-RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    freetype-dev \
-    harfbuzz \
+# Instalar dependencias del sistema
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
     ca-certificates \
-    ttf-freefont \
-    && rm -rf /var/cache/apk/*
+    fonts-liberation \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libxss1 \
+    libasound2 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Crear directorio de trabajo
+# Crear directorio de la aplicación
 WORKDIR /app
 
-# Crear usuario no-root para seguridad
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nextjs -u 1001
+# Copiar package.json
+COPY package.json ./
 
-# Copiar archivos de dependencias
-COPY package*.json ./
-
-# Instalar dependencias de Node.js
-RUN npm ci --only=production && npm cache clean --force
+# Instalar dependencias usando npm install (no npm ci)
+RUN npm install --production
 
 # Copiar código fuente
-COPY --chown=nextjs:nodejs . .
+COPY . .
 
-# Cambiar permisos
-RUN chown -R nextjs:nodejs /app
+# Crear usuario no-root para seguridad
+RUN groupadd -r pptruser && useradd -r -g pptruser -G audio,video pptruser \
+    && mkdir -p /home/pptruser/Downloads \
+    && chown -R pptruser:pptruser /home/pptruser \
+    && chown -R pptruser:pptruser /app
 
 # Cambiar a usuario no-root
-USER nextjs
+USER pptruser
 
 # Exponer puerto
 EXPOSE 3000
 
-# Variables de entorno para Puppeteer
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-ENV NODE_ENV=production
-
-# Comando para ejecutar la aplicación
-CMD ["npm", "start"]
+# Comando de inicio
+CMD ["node", "index.js"]
